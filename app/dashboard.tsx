@@ -11,6 +11,23 @@ interface Props {
 
 type ChangeMap = Record<string, "create" | "update" | "delete">;
 
+// Convert any CSS color string to hex using a canvas element (client-side only)
+function cssColorToHex(color: string): string {
+  if (!color || typeof document === "undefined") return "#000000";
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 1;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return "#000000";
+    ctx.fillStyle = color;
+    ctx.fillRect(0, 0, 1, 1);
+    const [r, g, b] = Array.from(ctx.getImageData(0, 0, 1, 1).data);
+    return "#" + [r, g, b].map((x) => x.toString(16).padStart(2, "0")).join("");
+  } catch {
+    return "#000000";
+  }
+}
+
 interface ImportedFlavor {
   name: string;
   locationId: string;
@@ -60,6 +77,14 @@ export default function Dashboard({ onLogout }: Props) {
   const [importError, setImportError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Menu (Special Custard Flavor) state
+  const [menuFlavor, setMenuFlavor] = useState("");
+  const [menuTextColor, setMenuTextColor] = useState("#000000");
+  const [menuOriginalFlavor, setMenuOriginalFlavor] = useState("");
+  const [menuOriginalTextColor, setMenuOriginalTextColor] = useState("#000000");
+  const [menuChanged, setMenuChanged] = useState(false);
+  const [menuLoading, setMenuLoading] = useState(true);
+
   // New flavor form state
   const [newName, setNewName] = useState("");
   const [newLocation, setNewLocation] = useState<string>(LOCATIONS[0].id);
@@ -69,6 +94,24 @@ export default function Dashboard({ onLogout }: Props) {
   const showToast = useCallback((message: string, type: "success" | "error") => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 4000);
+  }, []);
+
+  const fetchMenu = useCallback(async () => {
+    setMenuLoading(true);
+    try {
+      const res = await fetch("/api/menu");
+      if (!res.ok) throw new Error("Failed to fetch menu");
+      const data = await res.json();
+      const hex = cssColorToHex(data.textColor || "#000000");
+      setMenuFlavor(data.flavor || "");
+      setMenuTextColor(hex);
+      setMenuOriginalFlavor(data.flavor || "");
+      setMenuOriginalTextColor(hex);
+      setMenuChanged(false);
+    } catch {
+      // Non-fatal — menu widget will just show empty
+    }
+    setMenuLoading(false);
   }, []);
 
   const fetchItems = useCallback(async () => {
@@ -93,9 +136,10 @@ export default function Dashboard({ onLogout }: Props) {
 
   useEffect(() => {
     fetchItems();
-  }, [fetchItems]);
+    fetchMenu();
+  }, [fetchItems, fetchMenu]);
 
-  const changeCount = Object.keys(changes).length;
+  const changeCount = Object.keys(changes).length + (menuChanged ? 1 : 0);
 
   function updateItem(id: string, field: keyof FlavorItem, value: string | boolean) {
     setItems((prev) =>
@@ -341,6 +385,29 @@ export default function Dashboard({ onLogout }: Props) {
       .filter(([, type]) => type === "delete")
       .map(([id]) => id);
 
+    const errors: string[] = [];
+
+    // Sync menu if changed
+    if (menuChanged) {
+      try {
+        const menuRes = await fetch("/api/menu", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ flavor: menuFlavor, textColor: menuTextColor }),
+        });
+        if (!menuRes.ok) {
+          const d = await menuRes.json();
+          errors.push(`Menu: ${d.error || "Unknown error"}`);
+        } else {
+          setMenuOriginalFlavor(menuFlavor);
+          setMenuOriginalTextColor(menuTextColor);
+          setMenuChanged(false);
+        }
+      } catch {
+        errors.push("Menu: network error");
+      }
+    }
+
     try {
       const res = await fetch("/api/flavors/sync", {
         method: "POST",
@@ -349,9 +416,11 @@ export default function Dashboard({ onLogout }: Props) {
       });
 
       const result: SyncResult = await res.json();
-      setSyncResult(result);
+      const allErrors = [...errors, ...result.errors];
+      const finalResult = { ...result, errors: allErrors };
+      setSyncResult(finalResult);
 
-      if (result.errors.length === 0) {
+      if (allErrors.length === 0) {
         showToast(
           `Synced! ${result.created} created, ${result.updated} updated, ${result.deleted} deleted`,
           "success"
@@ -359,7 +428,7 @@ export default function Dashboard({ onLogout }: Props) {
         setShowSyncModal(false);
         await fetchItems();
       } else {
-        showToast(`Sync completed with ${result.errors.length} error(s)`, "error");
+        showToast(`Sync completed with ${allErrors.length} error(s)`, "error");
       }
     } catch {
       showToast("Sync failed - check your connection", "error");
@@ -483,6 +552,78 @@ export default function Dashboard({ onLogout }: Props) {
               {loc.name}
             </button>
           ))}
+        </div>
+
+        {/* Special Custard Flavor (Menus collection) */}
+        <div className="menu-widget">
+          <div className="menu-widget-header">
+            <div className="menu-widget-title">
+              <span className="menu-widget-icon">★</span>
+              Special Custard Flavor
+              <span className="menu-widget-subtitle">All Stores — Live Website</span>
+            </div>
+            {menuChanged && <span className="sync-badge">unsaved</span>}
+          </div>
+          {menuLoading ? (
+            <div style={{ padding: "1rem 0", color: "var(--text-muted)", fontSize: "0.85rem" }}>
+              Loading...
+            </div>
+          ) : (
+            <div className="menu-widget-fields">
+              <div className="menu-field-group">
+                <label className="menu-field-label">Flavor Name</label>
+                <input
+                  type="text"
+                  className="menu-field-input"
+                  value={menuFlavor}
+                  placeholder="e.g. Chocolate Peanut Butter"
+                  onChange={(e) => {
+                    setMenuFlavor(e.target.value);
+                    setMenuChanged(
+                      e.target.value !== menuOriginalFlavor || menuTextColor !== menuOriginalTextColor
+                    );
+                  }}
+                />
+              </div>
+              <div className="menu-field-group menu-field-color-group">
+                <label className="menu-field-label">Text Color</label>
+                <div className="menu-color-row">
+                  <input
+                    type="color"
+                    className="menu-color-swatch"
+                    value={menuTextColor}
+                    onChange={(e) => {
+                      setMenuTextColor(e.target.value);
+                      setMenuChanged(
+                        menuFlavor !== menuOriginalFlavor || e.target.value !== menuOriginalTextColor
+                      );
+                    }}
+                  />
+                  <input
+                    type="text"
+                    className="menu-field-input menu-color-text"
+                    value={menuTextColor}
+                    onChange={(e) => {
+                      setMenuTextColor(e.target.value);
+                      setMenuChanged(
+                        menuFlavor !== menuOriginalFlavor || e.target.value !== menuOriginalTextColor
+                      );
+                    }}
+                    placeholder="#000000"
+                  />
+                  <div
+                    className="menu-preview-pill"
+                    style={{ backgroundColor: menuTextColor, color: "#fff" }}
+                  >
+                    {menuFlavor || "Preview"}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+          <p className="menu-widget-hint">
+            Changes will be pushed to the live website when you click <strong>Sync to Webflow</strong>.
+          </p>
         </div>
 
         {/* Table editor */}
@@ -742,6 +883,28 @@ export default function Dashboard({ onLogout }: Props) {
               </p>
 
               <ul className="change-list">
+                {menuChanged && (
+                  <li className="change-item update">
+                    <span className="change-badge">update</span>
+                    <span style={{ fontWeight: 500 }}>Special Custard Flavor</span>
+                    <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
+                      All Stores
+                    </span>
+                    <span style={{ fontSize: "0.8rem", display: "flex", alignItems: "center", gap: "0.3rem" }}>
+                      {menuFlavor || "(empty)"}
+                      <span
+                        style={{
+                          display: "inline-block",
+                          width: 12,
+                          height: 12,
+                          borderRadius: "50%",
+                          backgroundColor: menuTextColor,
+                          border: "1px solid rgba(0,0,0,0.15)",
+                        }}
+                      />
+                    </span>
+                  </li>
+                )}
                 {Object.entries(changes).map(([id, type]) => {
                   const item = type === "delete"
                     ? originalItems.find((i) => i.id === id) || items.find((i) => i.id === id)
