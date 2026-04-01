@@ -31,7 +31,7 @@ export default function CalendarPreview({ events }: Props) {
       events={events}
       height="auto"
       eventDisplay="block"
-      dayMaxEvents={5}
+      dayMaxEvents={7}
       moreLinkClick="popover"
     />
   );

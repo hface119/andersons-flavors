@@ -485,23 +485,6 @@ export default function Dashboard({ onLogout }: Props) {
           ))}
         </div>
 
-        {/* Calendar preview */}
-        <div className="panel calendar-panel">
-          <div className="panel-header">
-            <h2>
-              Calendar Preview
-              {selectedLocation && (
-                <span style={{ fontWeight: 400, color: getLocationColor(selectedLocation), marginLeft: 8, fontSize: "0.85rem" }}>
-                  — {getLocationById(selectedLocation)?.name}
-                </span>
-              )}
-            </h2>
-          </div>
-          <div className="panel-body">
-            <CalendarPreview events={calendarEvents} />
-          </div>
-        </div>
-
         {/* Table editor */}
         <div className="panel">
           <div className="panel-header">
@@ -712,6 +695,23 @@ export default function Dashboard({ onLogout }: Props) {
             <button className="btn btn-primary" onClick={addFlavor}>
               + Add Flavor
             </button>
+          </div>
+        </div>
+
+        {/* Calendar preview */}
+        <div className="panel calendar-panel">
+          <div className="panel-header">
+            <h2>
+              Calendar Preview
+              {selectedLocation && (
+                <span style={{ fontWeight: 400, color: getLocationColor(selectedLocation), marginLeft: 8, fontSize: "0.85rem" }}>
+                  — {getLocationById(selectedLocation)?.name}
+                </span>
+              )}
+            </h2>
+          </div>
+          <div className="panel-body">
+            <CalendarPreview events={calendarEvents} />
           </div>
         </div>
       </div>
