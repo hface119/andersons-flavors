@@ -43,9 +43,7 @@ export default function Home() {
   if (authed === null) {
     return (
       <div className="loading-screen">
-        <div>
-          <div className="loading-spinner-lg" />
-        </div>
+        <div className="loading-spinner-lg" />
       </div>
     );
   }
@@ -54,8 +52,14 @@ export default function Home() {
     return (
       <div className="login-wrapper">
         <form className="login-card" onSubmit={handleLogin}>
-          <h1>Anderson&apos;s Custard</h1>
-          <p>Flavor Calendar Manager</p>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="https://cdn.prod.website-files.com/6530928229391255a094fe2a/6530a6d4ffeafda603ade075_AndersonsLogo.svg"
+            alt="Anderson's Frozen Custard"
+            className="login-logo"
+          />
+          <h1>Flavor Calendar</h1>
+          <p>Sign in to manage daily custard flavors</p>
           {error && <div className="login-error">{error}</div>}
           <input
             type="password"

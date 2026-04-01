@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { FlavorItem, SyncResult } from "@/lib/types";
 import { LOCATIONS, getLocationById, getLocationColor } from "@/lib/locations";
 import CalendarPreview from "./calendar-preview";
@@ -10,6 +10,13 @@ interface Props {
 }
 
 type ChangeMap = Record<string, "create" | "update" | "delete">;
+
+interface ImportedFlavor {
+  name: string;
+  locationId: string;
+  startDate: string;
+  endDate: string;
+}
 
 let tempIdCounter = 0;
 function tempId() {
@@ -37,9 +44,18 @@ export default function Dashboard({ onLogout }: Props) {
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
   const [filterLocation, setFilterLocation] = useState<string>("all");
   const [filterSearch, setFilterSearch] = useState("");
-  const [activeLocations, setActiveLocations] = useState<Set<string>>(
-    new Set(LOCATIONS.map((l) => l.id))
-  );
+  const [selectedLocation, setSelectedLocation] = useState<string | null>(null);
+
+  // Delete prior state
+  const [deletePriorDate, setDeletePriorDate] = useState("");
+
+  // Import state
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importedFlavors, setImportedFlavors] = useState<ImportedFlavor[] | null>(null);
+  const [importError, setImportError] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // New flavor form state
   const [newName, setNewName] = useState("");
@@ -83,7 +99,6 @@ export default function Dashboard({ onLogout }: Props) {
       prev.map((item) => {
         if (item.id !== id) return item;
         const updated = { ...item, [field]: value };
-        // Auto-set className when location changes
         if (field === "locationId") {
           const loc = getLocationById(value as string);
           if (loc) updated.className = loc.className;
@@ -92,7 +107,6 @@ export default function Dashboard({ onLogout }: Props) {
       })
     );
 
-    // Track change
     if (!changes[id]) {
       const isNew = id.startsWith("_new_");
       setChanges((prev) => ({ ...prev, [id]: isNew ? "create" : "update" }));
@@ -111,7 +125,6 @@ export default function Dashboard({ onLogout }: Props) {
     } else {
       setChanges((prev) => {
         if (prev[id] === "delete") {
-          // Undo delete - restore from original
           const next = { ...prev };
           delete next[id];
           const orig = originalItems.find((i) => i.id === id);
@@ -140,6 +153,41 @@ export default function Dashboard({ onLogout }: Props) {
       delete next[id];
       return next;
     });
+  }
+
+  // Delete all flavors prior to a date
+  function handleDeletePrior() {
+    if (!deletePriorDate) {
+      showToast("Please select a date first", "error");
+      return;
+    }
+
+    const cutoff = toISODate(deletePriorDate);
+    let count = 0;
+
+    items.forEach((item) => {
+      if (item.startDate && item.startDate < cutoff && changes[item.id] !== "delete") {
+        const isNew = item.id.startsWith("_new_");
+        if (isNew) {
+          setItems((prev) => prev.filter((i) => i.id !== item.id));
+          setChanges((prev) => {
+            const next = { ...prev };
+            delete next[item.id];
+            return next;
+          });
+        } else {
+          setChanges((prev) => ({ ...prev, [item.id]: "delete" }));
+        }
+        count++;
+      }
+    });
+
+    if (count > 0) {
+      showToast(`Marked ${count} flavor(s) for deletion - Sync to apply`, "success");
+    } else {
+      showToast("No flavors found before that date", "error");
+    }
+    setDeletePriorDate("");
   }
 
   function addFlavor() {
@@ -171,6 +219,91 @@ export default function Dashboard({ onLogout }: Props) {
     setNewStartDate("");
     setNewEndDate("");
     showToast(`Added "${newItem.name}" - remember to Sync!`, "success");
+  }
+
+  // Import: handle file upload
+  async function handleFileUpload(file: File) {
+    setImportError("");
+    // Read text from file
+    const text = await file.text();
+    setImportText(text);
+  }
+
+  // Import: send to AI for parsing
+  async function handleImportParse() {
+    if (!importText.trim()) {
+      setImportError("Please paste or upload a flavor calendar document");
+      return;
+    }
+
+    setImporting(true);
+    setImportError("");
+    setImportedFlavors(null);
+
+    // Try to detect month/year from text
+    const monthNames = ["january","february","march","april","may","june","july","august","september","october","november","december"];
+    const textLower = importText.toLowerCase();
+    let month = new Date().getMonth() + 1;
+    let year = new Date().getFullYear();
+
+    for (let i = 0; i < monthNames.length; i++) {
+      if (textLower.includes(monthNames[i])) {
+        month = i + 1;
+        break;
+      }
+    }
+
+    const yearMatch = importText.match(/20\d{2}/);
+    if (yearMatch) year = parseInt(yearMatch[0]);
+
+    try {
+      const res = await fetch("/api/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: importText, month, year }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Import failed");
+
+      setImportedFlavors(data.flavors);
+    } catch (e: unknown) {
+      setImportError(e instanceof Error ? e.message : "Import failed");
+    }
+
+    setImporting(false);
+  }
+
+  // Import: add parsed flavors to the list
+  function handleImportConfirm() {
+    if (!importedFlavors) return;
+
+    let count = 0;
+    for (const flavor of importedFlavors) {
+      const id = tempId();
+      const loc = getLocationById(flavor.locationId);
+      const newItem: FlavorItem = {
+        id,
+        name: flavor.name,
+        slug: "",
+        locationId: flavor.locationId,
+        startDate: toISODate(flavor.startDate),
+        endDate: toISODate(flavor.endDate),
+        className: loc?.className || "",
+        allDay: true,
+        isDraft: false,
+        isArchived: false,
+        lastPublished: null,
+      };
+      setItems((prev) => [...prev, newItem]);
+      setChanges((prev) => ({ ...prev, [id]: "create" }));
+      count++;
+    }
+
+    showToast(`Imported ${count} flavors - review and Sync when ready!`, "success");
+    setShowImportModal(false);
+    setImportText("");
+    setImportedFlavors(null);
   }
 
   async function handleSync() {
@@ -218,34 +351,44 @@ export default function Dashboard({ onLogout }: Props) {
     setSyncing(false);
   }
 
-  function toggleLocation(id: string) {
-    setActiveLocations((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
+  // Location pill click: exclusive select (click = show only that one, click again = show all)
+  function handleLocationPillClick(id: string) {
+    if (selectedLocation === id) {
+      // Clicking the same pill again: show all
+      setSelectedLocation(null);
+      setFilterLocation("all");
+    } else {
+      setSelectedLocation(id);
+      setFilterLocation(id);
+    }
   }
+
+  function handleShowAll() {
+    setSelectedLocation(null);
+    setFilterLocation("all");
+  }
+
+  const activeLocations = useMemo(() => {
+    if (selectedLocation) {
+      return new Set([selectedLocation]);
+    }
+    return new Set(LOCATIONS.map((l) => l.id));
+  }, [selectedLocation]);
 
   const filteredItems = useMemo(() => {
     return items.filter((item) => {
       if (filterLocation !== "all" && item.locationId !== filterLocation) return false;
-      if (!activeLocations.has(item.locationId)) return false;
       if (filterSearch && !item.name.toLowerCase().includes(filterSearch.toLowerCase()))
         return false;
       return true;
     });
-  }, [items, filterLocation, filterSearch, activeLocations]);
+  }, [items, filterLocation, filterSearch]);
 
   const calendarEvents = useMemo(() => {
     return items
       .filter((item) => activeLocations.has(item.locationId) && changes[item.id] !== "delete")
       .map((item) => {
         const loc = getLocationById(item.locationId);
-        // FullCalendar end date is exclusive for all-day events, so add 1 day
         let endDate = item.endDate;
         if (endDate) {
           const d = new Date(endDate);
@@ -279,7 +422,15 @@ export default function Dashboard({ onLogout }: Props) {
     <>
       {/* Header */}
       <header className="app-header">
-        <h1>Anderson&apos;s Flavor Calendar</h1>
+        <div className="header-left">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="https://cdn.prod.website-files.com/6530928229391255a094fe2a/6530a6d4ffeafda603ade075_AndersonsLogo.svg"
+            alt="Anderson's"
+            className="header-logo"
+          />
+          <h1>Flavor Calendar</h1>
+        </div>
         <div className="header-actions">
           {changeCount > 0 && <span className="sync-badge">{changeCount} pending</span>}
           <button
@@ -298,12 +449,19 @@ export default function Dashboard({ onLogout }: Props) {
       <div className="app-body">
         {/* Location filter pills */}
         <div className="location-pills">
+          <span className="location-pill-label">Filter:</span>
+          <button
+            className={`location-pill-all ${selectedLocation === null ? "active" : ""}`}
+            onClick={handleShowAll}
+          >
+            All Locations
+          </button>
           {LOCATIONS.map((loc) => (
             <button
               key={loc.id}
-              className={`location-pill ${activeLocations.has(loc.id) ? "active" : ""}`}
+              className={`location-pill ${selectedLocation === loc.id ? "active" : selectedLocation === null ? "active" : ""}`}
               style={{ backgroundColor: loc.color }}
-              onClick={() => toggleLocation(loc.id)}
+              onClick={() => handleLocationPillClick(loc.id)}
             >
               {loc.name}
             </button>
@@ -313,7 +471,14 @@ export default function Dashboard({ onLogout }: Props) {
         {/* Calendar preview */}
         <div className="panel calendar-panel">
           <div className="panel-header">
-            <h2>Calendar Preview</h2>
+            <h2>
+              Calendar Preview
+              {selectedLocation && (
+                <span style={{ fontWeight: 400, color: getLocationColor(selectedLocation), marginLeft: 8, fontSize: "0.85rem" }}>
+                  — {getLocationById(selectedLocation)?.name}
+                </span>
+              )}
+            </h2>
           </div>
           <div className="panel-body">
             <CalendarPreview events={calendarEvents} />
@@ -329,16 +494,24 @@ export default function Dashboard({ onLogout }: Props) {
                 ({filteredItems.length} items)
               </span>
             </h2>
-            <button className="btn btn-outline btn-sm" onClick={fetchItems}>
-              Refresh
-            </button>
+            <div style={{ display: "flex", gap: "0.5rem" }}>
+              <button className="btn btn-blue btn-sm" onClick={() => setShowImportModal(true)}>
+                Import Calendar
+              </button>
+              <button className="btn btn-outline btn-sm" onClick={fetchItems}>
+                Refresh
+              </button>
+            </div>
           </div>
 
           {/* Toolbar */}
           <div className="toolbar">
             <select
               value={filterLocation}
-              onChange={(e) => setFilterLocation(e.target.value)}
+              onChange={(e) => {
+                setFilterLocation(e.target.value);
+                setSelectedLocation(e.target.value === "all" ? null : e.target.value);
+              }}
             >
               <option value="all">All Locations</option>
               {LOCATIONS.map((loc) => (
@@ -354,6 +527,24 @@ export default function Dashboard({ onLogout }: Props) {
               onChange={(e) => setFilterSearch(e.target.value)}
               style={{ minWidth: 200 }}
             />
+            <div className="toolbar-separator" />
+            <div className="delete-prior-section">
+              <label style={{ fontSize: "0.78rem", fontWeight: 600, color: "var(--text-muted)", whiteSpace: "nowrap" }}>
+                Delete all before:
+              </label>
+              <input
+                type="date"
+                value={deletePriorDate}
+                onChange={(e) => setDeletePriorDate(e.target.value)}
+              />
+              <button
+                className="btn btn-danger btn-sm"
+                onClick={handleDeletePrior}
+                disabled={!deletePriorDate}
+              >
+                Delete
+              </button>
+            </div>
           </div>
 
           {/* Table */}
@@ -551,7 +742,7 @@ export default function Dashboard({ onLogout }: Props) {
                         <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
                           {formatDateForInput(item.startDate)}
                           {item.endDate && item.endDate !== item.startDate
-                            ? ` to ${formatDateForInput(item.endDate)}`
+                            ? ` → ${formatDateForInput(item.endDate)}`
                             : ""}
                         </span>
                       )}
@@ -577,6 +768,159 @@ export default function Dashboard({ onLogout }: Props) {
                   `Push ${changeCount} Change${changeCount !== 1 ? "s" : ""}`
                 )}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Import modal */}
+      {showImportModal && (
+        <div className="modal-overlay" onClick={() => !importing && setShowImportModal(false)}>
+          <div className="modal modal-lg" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Import Flavor Calendar</h3>
+            </div>
+            <div className="modal-body">
+              <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", marginBottom: "1rem" }}>
+                Upload or paste a flavor calendar document (PDF text, spreadsheet, etc.).
+                AI will parse the flavors, map them to locations, and consolidate date ranges.
+              </p>
+
+              {!importedFlavors && !importing && (
+                <>
+                  <div
+                    className="import-dropzone"
+                    onClick={() => fileInputRef.current?.click()}
+                    onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add("dragover"); }}
+                    onDragLeave={(e) => e.currentTarget.classList.remove("dragover")}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.currentTarget.classList.remove("dragover");
+                      const file = e.dataTransfer.files[0];
+                      if (file) handleFileUpload(file);
+                    }}
+                  >
+                    <p><strong>Click to upload</strong> or drag and drop</p>
+                    <p className="hint">.txt, .csv, or paste text below</p>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".txt,.csv,.tsv"
+                      style={{ display: "none" }}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) handleFileUpload(file);
+                      }}
+                    />
+                  </div>
+
+                  <div style={{ margin: "0.75rem 0" }}>
+                    <label className="form-group">
+                      <span style={{ fontSize: "0.72rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text-muted)" }}>
+                        Or paste calendar text:
+                      </span>
+                      <textarea
+                        value={importText}
+                        onChange={(e) => setImportText(e.target.value)}
+                        rows={8}
+                        style={{
+                          width: "100%",
+                          padding: "0.6rem",
+                          border: "1.5px solid var(--border)",
+                          borderRadius: "8px",
+                          fontFamily: "inherit",
+                          fontSize: "0.82rem",
+                          resize: "vertical",
+                          outline: "none",
+                          marginTop: "0.25rem",
+                        }}
+                        placeholder="Paste the flavor calendar data here..."
+                      />
+                    </label>
+                  </div>
+
+                  {importError && (
+                    <p style={{ color: "var(--danger)", fontSize: "0.85rem", marginBottom: "0.5rem" }}>
+                      {importError}
+                    </p>
+                  )}
+                </>
+              )}
+
+              {importing && (
+                <div className="import-status">
+                  <span className="spinner" style={{ width: "1.25rem", height: "1.25rem" }} />
+                  <span>AI is parsing the flavor calendar... this may take a moment</span>
+                </div>
+              )}
+
+              {importedFlavors && (
+                <>
+                  <p style={{ fontWeight: 600, marginBottom: "0.5rem", color: "var(--dark)" }}>
+                    Found {importedFlavors.length} flavor entries:
+                  </p>
+                  <div className="import-preview-wrapper">
+                    <table className="import-preview-table">
+                      <thead>
+                        <tr>
+                          <th>Flavor</th>
+                          <th>Location</th>
+                          <th>Start</th>
+                          <th>End</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {importedFlavors.map((f, i) => {
+                          const loc = getLocationById(f.locationId);
+                          return (
+                            <tr key={i}>
+                              <td style={{ fontWeight: 500 }}>{f.name}</td>
+                              <td>
+                                <span className="location-dot" style={{ backgroundColor: loc?.color || "#666" }} />
+                                {loc?.name || "Unknown"}
+                              </td>
+                              <td>{f.startDate}</td>
+                              <td>{f.endDate}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="modal-footer">
+              {importedFlavors ? (
+                <>
+                  <button
+                    className="btn btn-outline"
+                    onClick={() => { setImportedFlavors(null); setImportText(""); }}
+                  >
+                    Start Over
+                  </button>
+                  <button className="btn btn-success" onClick={handleImportConfirm}>
+                    Add {importedFlavors.length} Flavors
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    className="btn btn-outline"
+                    onClick={() => { setShowImportModal(false); setImportText(""); setImportError(""); }}
+                    disabled={importing}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="btn btn-blue"
+                    onClick={handleImportParse}
+                    disabled={importing || !importText.trim()}
+                  >
+                    {importing ? <><span className="spinner" /> Parsing...</> : "Parse with AI"}
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>
