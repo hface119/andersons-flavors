@@ -30,7 +30,9 @@ function formatDateForInput(iso: string): string {
 
 function toISODate(dateStr: string): string {
   if (!dateStr) return "";
-  return new Date(dateStr + "T12:00:00Z").toISOString();
+  // Use midnight UTC (T00:00:00.000Z) — matches Webflow's CSV import format
+  // and ensures the front-end FullCalendar date comparisons work correctly.
+  return dateStr + "T00:00:00.000Z";
 }
 
 export default function Dashboard({ onLogout }: Props) {
