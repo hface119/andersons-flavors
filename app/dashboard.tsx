@@ -475,17 +475,27 @@ export default function Dashboard({ onLogout }: Props) {
       .filter((item) => activeLocations.has(item.locationId) && changes[item.id] !== "delete")
       .map((item) => {
         const loc = getLocationById(item.locationId);
-        let endDate = item.endDate;
-        if (endDate) {
-          const d = new Date(endDate);
-          d.setDate(d.getDate() + 1);
-          endDate = d.toISOString();
+
+        // Pass date-only strings (YYYY-MM-DD) to FullCalendar so it treats them
+        // as timezone-agnostic all-day dates — avoids midnight-UTC → previous-day
+        // local-time conversion that would shift events by one day in US timezones.
+        const startStr = item.startDate ? item.startDate.slice(0, 10) : "";
+
+        // FullCalendar end is exclusive. Add 1 day using UTC methods so that
+        // "2026-04-04T00:00:00.000Z" correctly becomes "2026-04-05" (not "2026-04-04"
+        // as would happen if local getDate() were used in a US/Eastern browser).
+        let endStr = startStr;
+        if (item.endDate) {
+          const d = new Date(item.endDate);
+          d.setUTCDate(d.getUTCDate() + 1);
+          endStr = d.toISOString().slice(0, 10);
         }
+
         return {
           id: item.id,
           title: item.name,
-          start: item.startDate,
-          end: endDate || item.startDate,
+          start: startStr,
+          end: endStr,
           allDay: true,
           backgroundColor: loc?.color || "#666",
           borderColor: loc?.color || "#666",
