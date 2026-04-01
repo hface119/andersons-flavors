@@ -52,6 +52,7 @@ export default function Dashboard({ onLogout }: Props) {
   // Import state
   const [showImportModal, setShowImportModal] = useState(false);
   const [importText, setImportText] = useState("");
+  const [importFile, setImportFile] = useState<File | null>(null);
   const [importing, setImporting] = useState(false);
   const [importedFlavors, setImportedFlavors] = useState<ImportedFlavor[] | null>(null);
   const [importError, setImportError] = useState("");
@@ -221,18 +222,29 @@ export default function Dashboard({ onLogout }: Props) {
     showToast(`Added "${newItem.name}" - remember to Sync!`, "success");
   }
 
-  // Import: handle file upload
+  // Import: handle file upload — store the raw File for binary types, text for others
   async function handleFileUpload(file: File) {
     setImportError("");
-    // Read text from file
-    const text = await file.text();
-    setImportText(text);
+    setImportedFlavors(null);
+    const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+    // For PDF and DOCX we send the raw file; for text-based just read it
+    if (ext === "pdf" || ext === "docx") {
+      setImportFile(file);
+      setImportText(`📄 ${file.name} (${(file.size / 1024).toFixed(0)} KB) — ready to parse`);
+    } else {
+      setImportFile(null);
+      const text = await file.text();
+      setImportText(text);
+    }
   }
 
   // Import: send to AI for parsing
   async function handleImportParse() {
-    if (!importText.trim()) {
-      setImportError("Please paste or upload a flavor calendar document");
+    const hasFile = importFile !== null;
+    const hasText = importText.trim() && !importText.startsWith("📄");
+
+    if (!hasFile && !hasText) {
+      setImportError("Please upload a file or paste calendar text");
       return;
     }
 
@@ -240,32 +252,35 @@ export default function Dashboard({ onLogout }: Props) {
     setImportError("");
     setImportedFlavors(null);
 
-    // Try to detect month/year from text
-    const monthNames = ["january","february","march","april","may","june","july","august","september","october","november","december"];
-    const textLower = importText.toLowerCase();
-    let month = new Date().getMonth() + 1;
-    let year = new Date().getFullYear();
-
-    for (let i = 0; i < monthNames.length; i++) {
-      if (textLower.includes(monthNames[i])) {
-        month = i + 1;
-        break;
-      }
-    }
-
-    const yearMatch = importText.match(/20\d{2}/);
-    if (yearMatch) year = parseInt(yearMatch[0]);
-
     try {
-      const res = await fetch("/api/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: importText, month, year }),
-      });
+      let res: Response;
+
+      if (hasFile && importFile) {
+        // Binary file (PDF / DOCX) — send as FormData
+        const fd = new FormData();
+        fd.append("file", importFile);
+        res = await fetch("/api/import", { method: "POST", body: fd });
+      } else {
+        // Plain text — send as JSON
+        const monthNames = ["january","february","march","april","may","june","july","august","september","october","november","december"];
+        const lower = importText.toLowerCase();
+        let month = new Date().getMonth() + 1;
+        let year = new Date().getFullYear();
+        for (let i = 0; i < monthNames.length; i++) {
+          if (lower.includes(monthNames[i])) { month = i + 1; break; }
+        }
+        const yearMatch = importText.match(/20\d{2}/);
+        if (yearMatch) year = parseInt(yearMatch[0]);
+
+        res = await fetch("/api/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: importText, month, year }),
+        });
+      }
 
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Import failed");
-
       setImportedFlavors(data.flavors);
     } catch (e: unknown) {
       setImportError(e instanceof Error ? e.message : "Import failed");
@@ -801,11 +816,11 @@ export default function Dashboard({ onLogout }: Props) {
                     }}
                   >
                     <p><strong>Click to upload</strong> or drag and drop</p>
-                    <p className="hint">.txt, .csv, or paste text below</p>
+                    <p className="hint">PDF, DOCX, TXT, or CSV — or paste text below</p>
                     <input
                       ref={fileInputRef}
                       type="file"
-                      accept=".txt,.csv,.tsv"
+                      accept=".pdf,.docx,.txt,.csv,.tsv"
                       style={{ display: "none" }}
                       onChange={(e) => {
                         const file = e.target.files?.[0];
@@ -895,7 +910,7 @@ export default function Dashboard({ onLogout }: Props) {
                 <>
                   <button
                     className="btn btn-outline"
-                    onClick={() => { setImportedFlavors(null); setImportText(""); }}
+                    onClick={() => { setImportedFlavors(null); setImportText(""); setImportFile(null); }}
                   >
                     Start Over
                   </button>
@@ -907,7 +922,7 @@ export default function Dashboard({ onLogout }: Props) {
                 <>
                   <button
                     className="btn btn-outline"
-                    onClick={() => { setShowImportModal(false); setImportText(""); setImportError(""); }}
+                    onClick={() => { setShowImportModal(false); setImportText(""); setImportFile(null); setImportError(""); }}
                     disabled={importing}
                   >
                     Cancel
